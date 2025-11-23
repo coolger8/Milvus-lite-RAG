@@ -12,7 +12,10 @@ os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 # 中科大镜像源
 # os.environ['HF_ENDPOINT'] = 'https://hf-mirror.ustc.edu.cn'
 
-# 3. 导入 Sentence Transformer 模型用于文本转嵌入向量
+# 3. 设置模型并行下载参数
+os.environ['MODELSCOPE_DOWNLOAD_PARALLEL'] = '8'
+
+# 4. 导入 Sentence Transformer 模型用于文本转嵌入向量
 try:
     from sentence_transformers import SentenceTransformer
     # 尝试加载模型，如果失败则使用随机向量
@@ -34,12 +37,60 @@ except ImportError:
     HAS_EMBEDDING_MODEL = False
     EMBEDDING_DIM = 384  # 使用较小的维度以提高性能
 
-# 4. 创建一个 Milvus 客户端实例
+# 5. 导入 transformers 库用于小型 LLM 处理结果
+try:
+    from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+    HAS_LLM = True
+except ImportError:
+    print("警告: 未安装 transformers 库，将跳过 LLM 结果处理")
+    HAS_LLM = False
+
+# 6. 初始化小型 LLM 模型用于处理结果
+def initialize_llm():
+    if HAS_LLM:
+        try:
+            print("正在加载小型 LLM 模型...")
+            # 使用一个较小的模型以节省资源
+            tokenizer = AutoTokenizer.from_pretrained("gpt2")
+            llm_model = AutoModelForCausalLM.from_pretrained("gpt2", trust_remote_code=True)
+            # 创建文本生成管道
+            text_generator = pipeline("text-generation", model=llm_model, tokenizer=tokenizer)
+            print("小型 LLM 模型加载成功")
+            return text_generator
+        except Exception as e:
+            print(f"加载小型 LLM 模型失败: {e}")
+            return None
+    return None
+
+# 7. 使用 LLM 处理 Milvus 搜索结果
+def process_results_with_llm(query_text, search_results, llm_generator):
+    if not llm_generator:
+        print("未初始化 LLM 模型，无法处理结果")
+        return
+    
+    print(f"\n使用小型 LLM 处理查询 '{query_text}' 的结果:")
+    
+    # 构造输入提示词
+    prompt = f"查询: {query_text}\n相关结果:\n"
+    for i, hits in enumerate(search_results):
+        for j, hit in enumerate(hits):
+            prompt += f"{j+1}. {hit['entity']['text']} (相似度得分: {hit['distance']:.4f})\n"
+    
+    prompt += "\n请根据以上结果，用简洁的语言回答查询:"
+    
+    try:
+        # 使用 LLM 生成回答
+        response = llm_generator(prompt, max_length=200, num_return_sequences=1, truncation=True)
+        print(response[0]['generated_text'][len(prompt):])  # 输出生成的文本部分
+    except Exception as e:
+        print(f"使用 LLM 处理结果时出错: {e}")
+
+# 8. 创建一个 Milvus 客户端实例
 #    这会在当前目录下创建一个名为 "milvus_demo.db" 的数据库文件。
 #    如果该文件已存在，客户端会直接连接它。
 client = MilvusClient("./milvus_demo.db")
 
-# 5. 定义集合的 Schema
+# 9. 定义集合的 Schema
 #    集合（Collection）类似于关系型数据库中的表。
 #    这里我们定义一个包含 "id"（主键）和 "vector"（向量）字段的集合。
 schema = client.create_schema(
@@ -53,7 +104,7 @@ schema.add_field(field_name="id", datatype=DataType.INT64, is_primary=True)
 # 添加向量字段 (使用正确的维度)
 schema.add_field(field_name="vector", datatype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM)
 
-# 6. 创建索引参数
+# 10. 创建索引参数
 #    为向量字段创建索引可以极大地加速后续的相似性查询。
 #    在本地模式下，只支持FLAT、IVF_FLAT和AUTOINDEX索引类型
 index_params = client.prepare_index_params()
@@ -64,7 +115,7 @@ index_params.add_index(
     params={},  # FLAT索引不需要额外参数
 )
 
-# 7. 创建集合（如果已存在则先删除）
+# 11. 创建集合（如果已存在则先删除）
 collection_name = "my_first_collection"
 if client.has_collection(collection_name):
     print(f"集合 '{collection_name}' 已存在，正在删除...")
@@ -78,7 +129,7 @@ client.create_collection(
 
 print(f"集合 '{collection_name}' 创建成功。")
 
-# 8. 文本转嵌入向量的函数
+# 12. 文本转嵌入向量的函数
 def text_to_embedding(text):
     """将文本转换为向量"""
     if HAS_EMBEDDING_MODEL:
@@ -93,7 +144,7 @@ def text_to_embedding(text):
         # 如果没有模型，则生成随机向量（保持兼容性）
         return [random.random() for _ in range(EMBEDDING_DIM)]
 
-# 9. 插入文本数据
+# 13. 插入文本数据
 #    准备一些示例文本数据
 texts_to_insert = [
     {"id": 0, "text": "人工智能是现代科技的重要发展方向"},
@@ -108,7 +159,13 @@ texts_to_insert = [
     {"id": 9, "text": "物联网连接了各种智能设备"} ,
     {"id": 10, "text": "小明喜欢吃香蕉"},
     {"id": 11, "text": "小明喜欢画香蕉"},
-    {"id": 12, "text": "小刚喜欢踢 ball"}
+    {"id": 12, "text": "小刚喜欢踢 ball"},
+    {"id": 13, "text": "小明身体缺少钾元素"},
+    {"id": 14, "text": "钾元素可以让人保持健康"},
+    {"id": 15, "text": "香蕉富含钾元素"},
+    {"id": 16, "text": "维生素可以让人开心"},
+    {"id": 17, "text": "小明身体缺少锻炼"},
+    
 ]
 
 print("正在将文本转换为向量...")
@@ -132,9 +189,12 @@ insert_result = client.insert(
 
 print(f"成功插入 {insert_result['insert_count']} 条文本向量数据。")
 
-# 10. 进行语义相似性查询
+# 14. 初始化 LLM 模型
+llm_generator = initialize_llm()
+
+# 15. 进行语义相似性查询
 #    准备一个查询文本
-query_text = "小明喜欢吃水果"
+query_text = "小明为什么喜欢吃香蕉"
 print(f"正在查询与 '{query_text}' 相似的文本...")
 query_vector = text_to_embedding(query_text)
 
@@ -154,6 +214,9 @@ for hits in search_results:
     for hit in sorted_hits:
         print(f"ID: {hit['id']}, 文本: {hit['entity']['text']}, 距离: {hit['distance']:.4f}")
 
-# 11. (可选) 关闭客户端
+# 16. 使用 LLM 处理搜索结果
+process_results_with_llm(query_text, search_results, llm_generator)
+
+# 17. (可选) 关闭客户端
 #    在脚本结束时，客户端会自动关闭，所以这一步通常不是必须的。
 #    client.close()
