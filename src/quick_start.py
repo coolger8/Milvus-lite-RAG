@@ -49,16 +49,16 @@ except ImportError:
 def initialize_llm():
     if HAS_LLM:
         try:
-            print("正在加载小型 LLM 模型...")
-            # 使用一个较小的模型以节省资源
-            tokenizer = AutoTokenizer.from_pretrained("gpt2")
-            llm_model = AutoModelForCausalLM.from_pretrained("gpt2", trust_remote_code=True)
+            print("正在加载 DeepSeek 小型 LLM 模型...")
+            # 使用 DeepSeek Coder 小模型替代 GPT-2
+            tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-coder-1.3b-base", trust_remote_code=True)
+            llm_model = AutoModelForCausalLM.from_pretrained("deepseek-ai/deepseek-coder-1.3b-base", trust_remote_code=True)
             # 创建文本生成管道
             text_generator = pipeline("text-generation", model=llm_model, tokenizer=tokenizer)
-            print("小型 LLM 模型加载成功")
+            print("DeepSeek 小型 LLM 模型加载成功")
             return text_generator
         except Exception as e:
-            print(f"加载小型 LLM 模型失败: {e}")
+            print(f"加载 DeepSeek 小型 LLM 模型失败: {e}")
             return None
     return None
 
@@ -68,7 +68,7 @@ def process_results_with_llm(query_text, search_results, llm_generator):
         print("未初始化 LLM 模型，无法处理结果")
         return
     
-    print(f"\n使用小型 LLM 处理查询 '{query_text}' 的结果:")
+    print(f"\n使用 DeepSeek 小型 LLM 处理查询 '{query_text}' 的结果:")
     
     # 构造输入提示词
     prompt = f"查询: {query_text}\n相关结果:\n"
